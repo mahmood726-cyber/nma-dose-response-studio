@@ -25599,6 +25599,8 @@ bootstrapSeed: document.getElementById("bootstrapSeed"),
   window.RobustBayesianMetaAnalysis = RobustBayesianMetaAnalysis;
   window.DiagnosticTestAccuracyMetaAnalysis = DiagnosticTestAccuracyMetaAnalysis;
 
+  // Expose internal state for WebR validation
+  window._nmaState = state;
 
   init();
 })();

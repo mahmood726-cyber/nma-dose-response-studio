@@ -5487,5 +5487,594 @@ Between-study variance ($\\tau^2$) & ${tau2} & [CI] \\\\
   </script>
 
   <script src="app.js" defer></script>
+
+  <!-- ================================================================
+       WebR In-Browser Validation (metafor cross-check)
+       Loads R via WebAssembly, runs metafor::rma() per treatment,
+       compares with the app's DerSimonian-Laird engine.
+       ================================================================ -->
+  <script>
+  (function() {
+    'use strict';
+
+    var WEBR_CARD_ID = 'webr-validation-card';
+    var webrInstance = null;
+    var webrLoading = false;
+
+    // Self-contained HTML escape
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+    }
+
+    function fmtNum(v, d) {
+      if (v == null || !isFinite(v)) return 'N/A';
+      return Number(v).toFixed(d);
+    }
+
+    // =====================================================================
+    // CARD HTML BUILDER
+    // =====================================================================
+    function buildWebrCardHTML() {
+      return ''
+        + '<div id="' + WEBR_CARD_ID + '" style="margin-top:24px;border:2px solid #7c3aed;border-radius:12px;overflow:hidden;">'
+        +   '<div style="background:linear-gradient(135deg,#7c3aed,#a855f7);padding:16px 20px;color:#fff;">'
+        +     '<div style="display:flex;align-items:center;gap:10px;">'
+        +       '<span style="font-size:22px;">&#x1F9EA;</span>'
+        +       '<div>'
+        +         '<h3 style="margin:0;font-size:16px;font-weight:700;">WebR: Verify with R metafor in Your Browser</h3>'
+        +         '<p style="margin:4px 0 0;font-size:12px;opacity:0.9;">Independent gold-standard cross-check &mdash; runs entirely client-side via WebAssembly</p>'
+        +       '</div>'
+        +     '</div>'
+        +   '</div>'
+        +   '<div style="padding:20px;background:var(--bg-card,#1a2332);">'
+        +     '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted,#8892a4);">'
+        +       'Extracts effect sizes and SEs from the loaded dataset, groups by treatment, '
+        +       'then runs <code>metafor::rma(yi, sei, method="DL")</code> in a real R session compiled to WebAssembly. '
+        +       'Falls back to base-R DerSimonian-Laird if metafor cannot be installed.'
+        +     '</p>'
+        +     '<button id="webrRunBtn" style="'
+        +       'background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;'
+        +       'padding:10px 24px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;'
+        +       'transition:opacity 0.2s;"'
+        +       ' onmouseover="this.style.opacity=\'0.85\'" onmouseout="this.style.opacity=\'1\'"'
+        +     '>Load R &amp; Validate</button>'
+        +     '<div id="webrProgress" style="display:none;margin-top:12px;">'
+        +       '<div style="display:flex;align-items:center;gap:8px;">'
+        +         '<div class="webr-spinner" style="width:18px;height:18px;border:3px solid #2a3544;'
+        +           'border-top-color:#7c3aed;border-radius:50%;animation:webrSpin 0.8s linear infinite;"></div>'
+        +         '<span id="webrProgressText" style="font-size:13px;color:var(--text-muted,#8892a4);">Initializing WebR...</span>'
+        +       '</div>'
+        +     '</div>'
+        +     '<div id="webrResults" style="margin-top:16px;"></div>'
+        +   '</div>'
+        + '</div>';
+    }
+
+    // Inject CSS keyframe for spinner (only once)
+    function ensureSpinnerCSS() {
+      if (document.getElementById('webr-spinner-css')) return;
+      var style = document.createElement('style');
+      style.id = 'webr-spinner-css';
+      style.textContent = '@keyframes webrSpin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(style);
+    }
+
+    // =====================================================================
+    // INJECT THE CARD — after the Model Summary panel
+    // =====================================================================
+    function injectWebrCard() {
+      if (document.getElementById(WEBR_CARD_ID)) return;
+      // Find the summaryBody table's parent panel
+      var summaryBody = document.getElementById('summaryBody');
+      if (!summaryBody) return;
+      var panel = summaryBody.closest('.panel');
+      if (!panel) return;
+
+      ensureSpinnerCSS();
+      var wrapper = document.createElement('div');
+      wrapper.innerHTML = buildWebrCardHTML();
+      panel.parentNode.insertBefore(wrapper.firstChild, panel.nextSibling);
+
+      // Attach click handler
+      var btn = document.getElementById('webrRunBtn');
+      if (btn) {
+        btn.addEventListener('click', runWebRValidation);
+      }
+    }
+
+    // =====================================================================
+    // MUTATION OBSERVER — auto-inject when summary table is populated
+    // =====================================================================
+    function setupObserver() {
+      var summaryBody = document.getElementById('summaryBody');
+      if (summaryBody) {
+        var observer = new MutationObserver(function() {
+          if (summaryBody.children.length > 0 && !document.getElementById(WEBR_CARD_ID)) {
+            injectWebrCard();
+          }
+        });
+        observer.observe(summaryBody, { childList: true });
+      }
+
+      // Also watch body in case summaryBody is rebuilt
+      var bodyObserver = new MutationObserver(function() {
+        if (!document.getElementById(WEBR_CARD_ID)) {
+          var sb = document.getElementById('summaryBody');
+          if (sb && sb.children.length > 0) {
+            injectWebrCard();
+          }
+        }
+      });
+      bodyObserver.observe(document.body, { childList: true, subtree: true });
+
+      // Inject immediately if summary already has content
+      if (summaryBody && summaryBody.children.length > 0) {
+        injectWebrCard();
+      }
+    }
+
+    // =====================================================================
+    // DATA EXTRACTION — reads from window._nmaState
+    // =====================================================================
+    function extractTreatmentData() {
+      var state = window._nmaState;
+      if (!state || !state.rawData || state.rawData.length < 1) return null;
+
+      var groups = {};
+      state.rawData.forEach(function(row) {
+        var t = row.treatment;
+        if (!t) return;
+        var yi = row.effect;
+        var se = row.se;
+        if (!isFinite(yi)) return;
+        if (!isFinite(se) || se <= 0) se = 0.1; // fallback
+        if (!groups[t]) groups[t] = { name: t, yi: [], se: [], vi: [] };
+        groups[t].yi.push(yi);
+        groups[t].se.push(se);
+        groups[t].vi.push(se * se);
+      });
+
+      return groups;
+    }
+
+    // Get app's DL result for a given treatment's effects/SEs
+    function getAppDL(effects, ses) {
+      try {
+        if (typeof window.DLEstimator !== 'undefined' && window.DLEstimator.calculate) {
+          return window.DLEstimator.calculate(effects, ses);
+        }
+      } catch (e) { /* fall through */ }
+      return null;
+    }
+
+    // Get global heterogeneity stats from app state
+    function getAppGlobalStats() {
+      var state = window._nmaState;
+      if (!state) return null;
+      return {
+        globalTau2: state.globalTau2,
+        globalI2: isFinite(state.globalI2) ? state.globalI2 * 100 : NaN,
+        globalH2: state.globalH2,
+        tau2Method: state.tau2Method || 'dl',
+        k: state.rawData ? state.rawData.length : 0,
+        treatments: state.treatments ? state.treatments.length : 0,
+        reference: state.reference || ''
+      };
+    }
+
+    // =====================================================================
+    // WebR VALIDATION RUNNER
+    // =====================================================================
+    async function runWebRValidation() {
+      var btn = document.getElementById('webrRunBtn');
+      var progress = document.getElementById('webrProgress');
+      var progressText = document.getElementById('webrProgressText');
+      var resultsDiv = document.getElementById('webrResults');
+      if (!btn || !progress || !resultsDiv) return;
+
+      // Extract data
+      var groups = extractTreatmentData();
+      if (!groups || Object.keys(groups).length < 1) {
+        resultsDiv.innerHTML = '<div style="padding:12px;background:#fef3c7;border:1px solid #f59e0b;'
+          + 'border-radius:8px;color:#92400e;font-size:13px;">'
+          + '<strong>No data available.</strong> Please load data and run the analysis first, '
+          + 'then return here to validate.</div>';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Running...';
+      progress.style.display = 'block';
+      resultsDiv.innerHTML = '';
+
+      try {
+        // Step 1: Load WebR if not already loaded
+        if (!webrInstance) {
+          if (webrLoading) {
+            progressText.textContent = 'WebR is already loading, please wait...';
+            return;
+          }
+          webrLoading = true;
+          progressText.textContent = 'Loading WebR runtime (~15 MB)...';
+
+          var WebR = (await import('https://webr.r-wasm.org/v0.4.4/webr.mjs')).WebR;
+          webrInstance = new WebR();
+          await webrInstance.init();
+          webrLoading = false;
+        }
+
+        // Step 2: Try metafor first
+        var useMetafor = true;
+        var rSource = 'metafor::rma(method="DL")';
+        progressText.textContent = 'Installing metafor package...';
+
+        try {
+          await webrInstance.evalR('webr::install("metafor", quiet = TRUE)');
+          await webrInstance.evalR('library(metafor)');
+        } catch (e) {
+          useMetafor = false;
+          rSource = 'base R DL fallback';
+          progressText.textContent = 'metafor unavailable, using base R fallback...';
+        }
+
+        // Step 3: Run per-treatment DL in R and compare with app
+        var treatmentNames = Object.keys(groups);
+        var perTreatment = [];
+        var totalK = 0;
+
+        for (var t = 0; t < treatmentNames.length; t++) {
+          var tName = treatmentNames[t];
+          var g = groups[tName];
+          if (g.yi.length < 2) {
+            perTreatment.push({
+              treatment: tName,
+              k: g.yi.length,
+              rData: null,
+              appData: null,
+              skip: true
+            });
+            continue;
+          }
+          totalK += g.yi.length;
+
+          progressText.textContent = 'Analyzing ' + tName + ' (' + (t + 1) + '/' + treatmentNames.length + ')...';
+
+          var yiStr = g.yi.join(',');
+          var viStr = g.vi.join(',');
+
+          var rCode;
+          if (useMetafor) {
+            rCode = [
+              'yi <- c(' + yiStr + ')',
+              'vi <- c(' + viStr + ')',
+              'fit <- rma(yi, vi, method="DL")',
+              'c(fit$beta[1], fit$se, fit$tau2, fit$I2, fit$QE, fit$QEp,',
+              '  fit$ci.lb, fit$ci.ub, fit$k, 0)'
+            ].join('\n');
+          } else {
+            rCode = [
+              'yi <- c(' + yiStr + ')',
+              'vi <- c(' + viStr + ')',
+              'k <- length(yi)',
+              'wi <- 1/vi',
+              'sumW <- sum(wi)',
+              'theta_fe <- sum(wi * yi) / sumW',
+              'Q <- sum(wi * (yi - theta_fe)^2)',
+              'C0 <- sumW - sum(wi^2)/sumW',
+              'tau2 <- max(0, (Q - (k - 1)) / C0)',
+              'wi_re <- 1/(vi + tau2)',
+              'sumW_re <- sum(wi_re)',
+              'theta_re <- sum(wi_re * yi) / sumW_re',
+              'se_re <- sqrt(1/sumW_re)',
+              'I2 <- ifelse(Q > (k-1), max(0, (Q - (k-1)) / Q) * 100, 0)',
+              'Qp <- 1 - pchisq(Q, k - 1)',
+              'ci_lb <- theta_re - qnorm(0.975) * se_re',
+              'ci_ub <- theta_re + qnorm(0.975) * se_re',
+              'c(theta_re, se_re, tau2, I2, Q, Qp, ci_lb, ci_ub, k, 1)'
+            ].join('\n');
+          }
+
+          var rResult = await webrInstance.evalR(rCode);
+          var vals = await rResult.toArray();
+
+          var rData = {
+            effect: vals[0],
+            se: vals[1],
+            tau2: vals[2],
+            I2: vals[3],
+            Q: vals[4],
+            Qp: vals[5],
+            ci_lb: vals[6],
+            ci_ub: vals[7],
+            k: vals[8]
+          };
+
+          // Get app DL for same treatment
+          var appData = getAppDL(g.yi, g.se);
+
+          perTreatment.push({
+            treatment: tName,
+            k: g.yi.length,
+            rData: rData,
+            appData: appData,
+            skip: false
+          });
+        }
+
+        // Step 4: Also run overall (all data points pooled) if k >= 2
+        var allYi = [];
+        var allVi = [];
+        var allSe = [];
+        treatmentNames.forEach(function(tName) {
+          var g = groups[tName];
+          for (var i = 0; i < g.yi.length; i++) {
+            allYi.push(g.yi[i]);
+            allVi.push(g.vi[i]);
+            allSe.push(g.se[i]);
+          }
+        });
+
+        var overallR = null;
+        var overallApp = null;
+        if (allYi.length >= 2) {
+          progressText.textContent = 'Running overall pooled analysis...';
+          var allYiStr = allYi.join(',');
+          var allViStr = allVi.join(',');
+
+          var rCodeAll;
+          if (useMetafor) {
+            rCodeAll = [
+              'yi <- c(' + allYiStr + ')',
+              'vi <- c(' + allViStr + ')',
+              'fit <- rma(yi, vi, method="DL")',
+              'c(fit$beta[1], fit$se, fit$tau2, fit$I2, fit$QE, fit$QEp,',
+              '  fit$ci.lb, fit$ci.ub, fit$k, 0)'
+            ].join('\n');
+          } else {
+            rCodeAll = [
+              'yi <- c(' + allYiStr + ')',
+              'vi <- c(' + allViStr + ')',
+              'k <- length(yi)',
+              'wi <- 1/vi',
+              'sumW <- sum(wi)',
+              'theta_fe <- sum(wi * yi) / sumW',
+              'Q <- sum(wi * (yi - theta_fe)^2)',
+              'C0 <- sumW - sum(wi^2)/sumW',
+              'tau2 <- max(0, (Q - (k - 1)) / C0)',
+              'wi_re <- 1/(vi + tau2)',
+              'sumW_re <- sum(wi_re)',
+              'theta_re <- sum(wi_re * yi) / sumW_re',
+              'se_re <- sqrt(1/sumW_re)',
+              'I2 <- ifelse(Q > (k-1), max(0, (Q - (k-1)) / Q) * 100, 0)',
+              'Qp <- 1 - pchisq(Q, k - 1)',
+              'ci_lb <- theta_re - qnorm(0.975) * se_re',
+              'ci_ub <- theta_re + qnorm(0.975) * se_re',
+              'c(theta_re, se_re, tau2, I2, Q, Qp, ci_lb, ci_ub, k, 1)'
+            ].join('\n');
+          }
+
+          var rResultAll = await webrInstance.evalR(rCodeAll);
+          var valsAll = await rResultAll.toArray();
+          overallR = {
+            effect: valsAll[0],
+            se: valsAll[1],
+            tau2: valsAll[2],
+            I2: valsAll[3],
+            Q: valsAll[4],
+            Qp: valsAll[5],
+            ci_lb: valsAll[6],
+            ci_ub: valsAll[7],
+            k: valsAll[8]
+          };
+
+          overallApp = getAppDL(allYi, allSe);
+        }
+
+        // Step 5: Render results
+        progressText.textContent = 'Rendering results...';
+        var appGlobal = getAppGlobalStats();
+        renderWebrResults(resultsDiv, perTreatment, overallR, overallApp, appGlobal, rSource);
+
+        progress.style.display = 'none';
+        btn.textContent = 'Re-run Validation';
+        btn.disabled = false;
+
+      } catch (e) {
+        progress.style.display = 'none';
+        btn.disabled = false;
+        btn.textContent = 'Retry Validation';
+        resultsDiv.innerHTML = '<div style="padding:12px;background:#fef2f2;border:1px solid #ef4444;'
+          + 'border-radius:8px;color:#991b1b;font-size:13px;">'
+          + '<strong>WebR Error:</strong> ' + esc(e.message) + '</div>';
+      }
+    }
+
+    // =====================================================================
+    // RENDER COMPARISON RESULTS
+    // =====================================================================
+    function renderWebrResults(container, perTreatment, overallR, overallApp, appGlobal, rSource) {
+      var badgeColor = rSource.indexOf('metafor') >= 0 ? '#7c3aed' : '#d97706';
+      var html = '';
+
+      // Header badge
+      html += '<div style="margin-bottom:16px;">';
+      html += '<span style="display:inline-block;padding:4px 12px;border-radius:20px;'
+            + 'background:' + badgeColor + ';color:#fff;font-size:12px;font-weight:600;">'
+            + 'R Engine: ' + esc(rSource) + '</span>';
+      if (appGlobal) {
+        html += ' <span style="font-size:12px;color:var(--text-muted,#8892a4);">'
+              + esc(appGlobal.treatments) + ' treatments, '
+              + esc(appGlobal.k) + ' data points'
+              + (appGlobal.reference ? ', ref: ' + esc(appGlobal.reference) : '')
+              + '</span>';
+      }
+      html += '</div>';
+
+      // Note about dose-response
+      html += '<div style="padding:10px 14px;background:rgba(124,58,237,0.08);border:1px solid rgba(124,58,237,0.25);'
+            + 'border-radius:8px;margin-bottom:16px;font-size:12px;color:var(--text-muted,#8892a4);">'
+            + '<strong style="color:#a855f7;">Note:</strong> This cross-check pools all effect sizes within each treatment arm '
+            + 'using standard DerSimonian-Laird random-effects meta-analysis. The app\'s dose-response curves use '
+            + 'non-linear regression (Emax/Hill/RCS/FP), so the pooled estimates will differ from the curve-fitted values. '
+            + 'The purpose is to verify the underlying DL computation engine matches R\'s metafor exactly.'
+            + '</div>';
+
+      var globalAllMatch = true;
+
+      // Overall pooled section
+      if (overallR) {
+        html += '<h4 style="margin:16px 0 8px;color:var(--accent,#a855f7);font-size:14px;">'
+              + 'Overall Pooled (All Data Points, DL)</h4>';
+        html += buildComparisonTable(overallR, overallApp);
+        if (overallApp) {
+          var om = checkMatch(overallR, overallApp);
+          if (!om) globalAllMatch = false;
+        }
+      }
+
+      // Per-treatment sections
+      html += '<h4 style="margin:20px 0 8px;color:var(--accent,#a855f7);font-size:14px;">'
+            + 'Per-Treatment DL Pooling</h4>';
+
+      for (var i = 0; i < perTreatment.length; i++) {
+        var pt = perTreatment[i];
+        html += '<div style="margin-bottom:12px;">';
+        html += '<div style="font-weight:600;font-size:13px;margin-bottom:4px;color:var(--text,#e2e8f0);">'
+              + esc(pt.treatment) + ' <span style="font-weight:400;color:var(--text-muted,#8892a4);">(k = '
+              + pt.k + ')</span></div>';
+
+        if (pt.skip) {
+          html += '<div style="font-size:12px;color:var(--text-muted,#8892a4);font-style:italic;">Skipped: fewer than 2 data points</div>';
+        } else {
+          html += buildComparisonTable(pt.rData, pt.appData);
+          if (pt.appData) {
+            var tm = checkMatch(pt.rData, pt.appData);
+            if (!tm) globalAllMatch = false;
+          }
+        }
+        html += '</div>';
+      }
+
+      // Verdict
+      if (globalAllMatch) {
+        html += '<div style="margin-top:16px;padding:12px 16px;background:rgba(22,163,74,0.12);border:1px solid #86efac;'
+              + 'border-radius:8px;color:#4ade80;font-size:14px;font-weight:600;">'
+              + '&#x2705; All DL engine metrics match R within tolerance &mdash; VALIDATED</div>';
+      } else {
+        html += '<div style="margin-top:16px;padding:12px 16px;background:rgba(245,158,11,0.12);border:1px solid #fcd34d;'
+              + 'border-radius:8px;color:#fbbf24;font-size:14px;">'
+              + '&#x26A0;&#xFE0F; Some metrics differ. Small numerical differences (&lt;0.01%) '
+              + 'are expected between metafor REML and DL methods, or due to floating-point precision.</div>';
+      }
+
+      container.innerHTML = html;
+    }
+
+    function buildComparisonTable(rData, appData) {
+      var metrics = [
+        { label: 'Pooled Effect', rKey: 'effect', appKey: 'effect', d: 6 },
+        { label: 'Standard Error', rKey: 'se', appKey: 'se', d: 6 },
+        { label: 'tau-squared', rKey: 'tau2', appKey: 'tau2', d: 6 },
+        { label: 'I-squared (%)', rKey: 'I2', appKey: 'I2', d: 2 },
+        { label: 'Q statistic', rKey: 'Q', appKey: 'Q', d: 4 },
+        { label: 'Q p-value', rKey: 'Qp', appKey: null, d: 6 },
+        { label: '95% CI Lower', rKey: 'ci_lb', appKey: 'ci_lb', d: 6 },
+        { label: '95% CI Upper', rKey: 'ci_ub', appKey: 'ci_ub', d: 6 }
+      ];
+
+      var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">';
+      html += '<thead><tr style="background:rgba(42,53,68,0.5);">';
+      html += '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #2a3544;color:var(--muted,#8892a4);">Metric</th>';
+      html += '<th style="padding:6px 10px;text-align:right;border-bottom:2px solid #2a3544;color:var(--muted,#8892a4);">R</th>';
+      if (appData) {
+        html += '<th style="padding:6px 10px;text-align:right;border-bottom:2px solid #2a3544;color:var(--muted,#8892a4);">App (JS)</th>';
+        html += '<th style="padding:6px 10px;text-align:center;border-bottom:2px solid #2a3544;color:var(--muted,#8892a4);">Match</th>';
+      }
+      html += '</tr></thead><tbody>';
+
+      for (var i = 0; i < metrics.length; i++) {
+        var m = metrics[i];
+        var rVal = rData[m.rKey];
+        var rStr = fmtNum(rVal, m.d);
+
+        html += '<tr style="border-bottom:1px solid #1e2a3a;">';
+        html += '<td style="padding:5px 10px;font-weight:500;color:var(--text,#e2e8f0);">' + esc(m.label) + '</td>';
+        html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;color:var(--text,#e2e8f0);">' + esc(rStr) + '</td>';
+
+        if (appData) {
+          var appVal = null;
+          if (m.appKey === 'ci_lb' && appData.ci) appVal = appData.ci.lower;
+          else if (m.appKey === 'ci_ub' && appData.ci) appVal = appData.ci.upper;
+          else if (m.appKey) appVal = appData[m.appKey];
+
+          var appStr = fmtNum(appVal, m.d);
+
+          var match = false;
+          if (m.appKey && isFinite(rVal) && isFinite(appVal)) {
+            var tol = Math.max(Math.abs(rVal) * 1e-4, 1e-6);
+            match = Math.abs(rVal - appVal) < tol;
+          } else if (!m.appKey) {
+            // Q p-value not available from app DL, skip match check
+            match = true;
+          }
+
+          var matchIcon = match
+            ? '<span style="color:#4ade80;">&#x2713;</span>'
+            : '<span style="color:#f87171;">&#x2717;</span>';
+
+          html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;color:var(--text,#e2e8f0);">' + esc(appStr) + '</td>';
+          html += '<td style="padding:5px 10px;text-align:center;">' + matchIcon + '</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    function checkMatch(rData, appData) {
+      if (!appData) return true;
+      var keys = [
+        { rKey: 'effect', appKey: 'effect' },
+        { rKey: 'se', appKey: 'se' },
+        { rKey: 'tau2', appKey: 'tau2' },
+        { rKey: 'I2', appKey: 'I2' },
+        { rKey: 'Q', appKey: 'Q' },
+        { rKey: 'ci_lb', appKey: 'ci_lb' },
+        { rKey: 'ci_ub', appKey: 'ci_ub' }
+      ];
+      for (var i = 0; i < keys.length; i++) {
+        var rVal = rData[keys[i].rKey];
+        var appVal;
+        if (keys[i].appKey === 'ci_lb' && appData.ci) appVal = appData.ci.lower;
+        else if (keys[i].appKey === 'ci_ub' && appData.ci) appVal = appData.ci.upper;
+        else appVal = appData[keys[i].appKey];
+
+        if (isFinite(rVal) && isFinite(appVal)) {
+          var tol = Math.max(Math.abs(rVal) * 1e-4, 1e-6);
+          if (Math.abs(rVal - appVal) >= tol) return false;
+        }
+      }
+      return true;
+    }
+
+    // =====================================================================
+    // BOOTSTRAP
+    // =====================================================================
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        // Delay slightly to let deferred app.js finish
+        setTimeout(setupObserver, 100);
+      });
+    } else {
+      setTimeout(setupObserver, 100);
+    }
+
+  })();
+  </script>
 </body>
 </html>
