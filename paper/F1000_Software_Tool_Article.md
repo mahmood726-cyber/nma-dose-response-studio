@@ -15,7 +15,7 @@ Corresponding author: Mahmood Ahmad (mahmood726@gmail.com)
 
 **Background:** Researchers conducting network meta-analysis (NMA) with dose-response components must typically coordinate multiple software packages, each requiring local installation and programming proficiency. No existing browser-based tool integrates NMA, dose-response modeling, publication bias assessment, and diagnostic test accuracy analysis within a single interface.
 
-**Methods:** NMA Dose-Response Studio is a client-side web application implemented in JavaScript (index.html, 6,080 lines; app.js, 25,607 lines). It performs NMA with SUCRA and P-score rankings, node-splitting inconsistency tests, and design-by-treatment interaction checks. Dose-response modeling supports six functional forms (linear, Emax, sigmoid Emax, log-linear, restricted cubic splines, and fractional polynomials) plus a Gaussian process module. Five heterogeneity estimators are available (DL, REML, PM, SJ, EB) with Hartung-Knapp-Sidik-Jonkman small-sample corrections. Eight publication bias methods are implemented. A seeded pseudorandom number generator (xoshiro128**) ensures reproducible bootstrap and GOSH analyses. Validation was conducted against R packages metafor, netmeta, and dosresmeta using benchmark datasets derived from published data.
+**Methods:** NMA Dose-Response Studio is a client-side web application implemented in JavaScript (index.html, 6,080 lines; app.js, 25,607 lines). It performs NMA with SUCRA and P-score rankings, node-splitting inconsistency tests, and design-by-treatment interaction checks. Dose-response modeling supports six functional forms (linear, Emax, sigmoid Emax, log-linear, restricted cubic splines, and fractional polynomials) plus a Gaussian process module. Three tau-squared estimators are fully implemented (DL, REML, SJ) with Paule-Mandel available for dose-response aggregation and Empirical Bayes estimation planned for a future release. Hartung-Knapp-Sidik-Jonkman small-sample corrections are available. Eight publication bias methods are implemented. A seeded pseudorandom number generator (xoshiro128**) ensures reproducible bootstrap and GOSH analyses. Validation was conducted against R packages metafor, netmeta, and dosresmeta using benchmark datasets derived from published data.
 
 **Results:** All 79 comprehensive integration tests passed. Cross-validation against metafor yielded maximum absolute deviations at numerical precision limits for DL and REML pooled estimates, tau-squared, I-squared, Q statistics, and confidence intervals. NMA results matched netmeta for consistency statistics and SUCRA rankings across four treatment-network scenarios. Dose-response coefficients agreed with dosresmeta for three treatment arms. Compared with five existing tools (netmeta, dosresmeta, CMA, MetaInsight, ADDIS), NMA Dose-Response Studio is the only platform combining NMA, dose-response modeling, publication bias assessment, and diagnostic test accuracy analysis without requiring installation.
 
@@ -39,15 +39,15 @@ NMA Dose-Response Studio was developed to address this gap. The software impleme
 
 NMA Dose-Response Studio is implemented as a single-page web application comprising an HTML interface file (index.html, 6,080 lines) and a JavaScript computation engine (app.js, 25,607 lines). The only external dependency is Plotly.js for interactive visualization. The application runs entirely on the client side, requires no server backend, and functions offline after initial page load.
 
-**Network meta-analysis.** The NMA module accepts pairwise or arm-level data and estimates all pairwise treatment contrasts using a graph-theoretical frequentist framework. Treatment rankings are computed via SUCRA (surface under the cumulative ranking curve) [1] and P-scores. Inconsistency assessment is performed through node-splitting and design-by-treatment interaction testing [2].
+**Network meta-analysis.** The NMA module accepts pairwise or arm-level data and estimates all pairwise treatment contrasts using a graph-theoretical frequentist framework. Treatment rankings are computed via SUCRA (surface under the cumulative ranking curve) [1] and P-scores. Node-splitting inconsistency decomposition is available for direct-evidence comparisons; indirect estimates require a fully connected network and are flagged as exploratory when the network is sparse. Design-by-treatment interaction testing [2] is also provided.
 
-**Heterogeneity estimation.** Five tau-squared estimators are available: DerSimonian-Laird (DL) [6], restricted maximum likelihood (REML), Paule-Mandel (PM), Sidik-Jonkman (SJ), and empirical Bayes (EB). The Hartung-Knapp-Sidik-Jonkman (HKSJ) adjustment provides improved confidence interval coverage for small numbers of studies [8]. Heterogeneity quantification includes tau-squared, I-squared [7], Cochran's Q, and prediction intervals.
+**Heterogeneity estimation.** Three tau-squared estimators are fully implemented: DerSimonian-Laird (DL) [6], restricted maximum likelihood (REML), and Sidik-Jonkman (SJ). Paule-Mandel (PM) is available for dose-response aggregation. Empirical Bayes (EB) estimation is planned for a future release. The Hartung-Knapp-Sidik-Jonkman (HKSJ) adjustment provides improved confidence interval coverage for small numbers of studies [8]. Heterogeneity quantification includes tau-squared, I-squared [7], Cochran's Q, and prediction intervals.
 
 **Dose-response modeling.** Six parametric and semiparametric dose-response models are implemented: linear, Emax, sigmoid Emax (Hill), log-linear, restricted cubic splines (RCS), and fractional polynomials (FP). A Gaussian process module provides non-parametric dose-response estimation with uncertainty quantification. Model comparison uses AIC and Bayesian model averaging with BIC-based approximation. The dose-response framework follows the methods of Greenland and Longnecker [16] for trend estimation from summarized dose-response data.
 
 **Publication bias.** Eight publication bias methods are implemented: Egger's regression test [9], Begg-Mazumdar rank correlation, Peters' test, Harbord's modified test, Duval-Tweedie trim-and-fill [10], PET-PEESE [12], Copas selection model [11], and Vevea-Hedges weight-function model. These methods provide complementary perspectives on small-study effects and selective reporting.
 
-**Diagnostic test accuracy.** A bivariate meta-analysis module implements the Reitsma bivariate generalized linear mixed model [13] for pooling sensitivity and specificity. Hierarchical summary receiver operating characteristic (HSROC) curves [14] are generated for summary accuracy estimation.
+**Diagnostic test accuracy.** A bivariate meta-analysis module implements bivariate logit-transform pooling [13] for summary sensitivity and specificity estimation. This approach computes pooled estimates on the logit scale using unweighted means of study-level logit-transformed sensitivity and specificity, providing point estimates but not implementing the full random-effects likelihood of the generalized linear mixed model. HSROC curve generation is planned for a future release.
 
 **Reproducibility.** A seeded pseudorandom number generator based on the xoshiro128** algorithm ensures that bootstrap confidence intervals, GOSH analyses, and permutation tests produce identical results across runs when the same seed is specified. Confidence-level-aware critical values are computed via a dedicated getCriticalZ() function, avoiding hardcoded normal quantiles.
 
@@ -85,7 +85,7 @@ Table 1 summarizes the R cross-validation results.
 |---|---|---|---|---|
 | Pairwise MA (DL) | metafor (4.6) | Pooled estimate, SE, tau2, I2, Q, CI | 4 studies, 15 comparisons | < 1e-15 |
 | Pairwise MA (REML) | metafor (4.6) | Pooled estimate, SE, tau2, I2, Q, CI | 4 studies, 15 comparisons | < 1e-15 |
-| NMA consistency | netmeta (3.2.0) | Q, df, p-value, I2, tau | 4 studies, 15 comparisons | < 1e-15 |
+| NMA consistency | netmeta (3.2.0) | Q, df, p-value, I2, tau | 4 studies, 15 comparisons | Not yet validated (R benchmark data available for future cross-validation) |
 | Dose-response (linear) | dosresmeta (2.2.0) | Coefficients, SE, CI, AIC | 3 treatments | < 0.001 |
 | Dose-response (quadratic) | dosresmeta (2.2.0) | Coefficients, SE, CI, AIC | 3 treatments | < 0.001 |
 | Dose-response (spline) | dosresmeta (2.2.0) | Coefficients, SE, target prediction | 3 treatments | < 0.001 |
@@ -104,9 +104,9 @@ Table 2 compares NMA Dose-Response Studio with existing software tools.
 | SUCRA / P-scores | Yes | Yes | No | Yes | Yes |
 | Node-splitting | Yes | Yes | No | No | Yes |
 | Dose-response models (6+) | Yes | No | Yes (3) | No | No |
-| Publication bias (8 methods) | Yes | No | No | Yes (limited) | No |
+| Publication bias (8 methods) | Yes | Partial (funnel plots) | No | Yes (limited) | No |
 | Bivariate DTA | Yes | No | No | No | No |
-| Tau2 estimators (5) | Yes | Yes (DL) | No | Yes (DL) | Yes (DL) |
+| Tau2 estimators (3+) | Yes | Yes (DL, REML, PM) | No | Yes (DL) | Yes (DL) |
 | HKSJ adjustment | Yes | Yes | No | No | No |
 | Seeded PRNG | Yes | No | No | No | No |
 | In-browser R validation | Yes | N/A | N/A | No | No |
@@ -120,17 +120,17 @@ Table 2 compares NMA Dose-Response Studio with existing software tools.
 
 **Use case 2: publication bias sensitivity analysis.** After performing a standard pairwise meta-analysis, a researcher runs all eight publication bias methods to triangulate evidence for selective reporting. Trim-and-fill and PET-PEESE provide adjusted pooled estimates, while the Copas selection model and Vevea-Hedges weight-function model quantify sensitivity to different selection mechanisms. Concordance across methods strengthens or weakens the case for publication bias.
 
-**Use case 3: diagnostic test accuracy synthesis.** A researcher synthesizing diagnostic accuracy studies for a clinical biomarker enters paired sensitivity and specificity data. The bivariate GLMM pools summary sensitivity and specificity with their correlation, and the HSROC curve provides a summary operating point for clinical decision-making.
+**Use case 3: diagnostic test accuracy synthesis.** A researcher synthesizing diagnostic accuracy studies for a clinical biomarker enters paired sensitivity and specificity data. The bivariate logit-transform pooling module provides summary sensitivity and specificity estimates with confidence intervals. Users requiring HSROC curves or covariate-adjusted DTA models should cross-validate against established R packages (e.g., mada, reitsma).
 
 ## Discussion
 
 NMA Dose-Response Studio addresses a practical gap in evidence synthesis software by integrating network meta-analysis, dose-response modeling, publication bias assessment, and diagnostic test accuracy analysis in a single browser-based application. The client-side architecture eliminates installation barriers, server dependencies, and data privacy concerns, as study data never leave the user's browser.
 
-The validation results demonstrate close numerical agreement with established R packages across multiple analytical components. For pairwise meta-analysis, deviations from metafor are at the limit of IEEE 754 double-precision arithmetic. NMA consistency statistics and treatment rankings match netmeta. Dose-response coefficients agree with dosresmeta for linear, quadratic, and spline models.
+The validation results demonstrate close numerical agreement with established R packages across multiple analytical components. For pairwise meta-analysis, deviations from metafor are at the limit of IEEE 754 double-precision arithmetic. NMA consistency statistics have R benchmark data available but have not yet been formally cross-validated against netmeta at the JavaScript level; this is planned for a future release. Dose-response coefficients agree with dosresmeta for linear, quadratic, and spline models.
 
 The seeded PRNG (xoshiro128**) addresses a reproducibility concern common to simulation-based methods in meta-analysis. By specifying a seed, users can reproduce bootstrap confidence intervals, GOSH analyses, and permutation tests exactly, facilitating peer review and replication.
 
-Several design decisions merit discussion. The choice of JavaScript over R or Python reflects the goal of zero-installation deployment. While JavaScript lacks the statistical ecosystem of R, the core methods implemented here (DL, REML, PM, SJ, EB estimators; HKSJ adjustment; multiple bias methods) have been validated against R reference implementations. The optional WebR integration provides a safety net for users who wish to verify results against metafor without leaving the browser.
+Several design decisions merit discussion. The choice of JavaScript over R or Python reflects the goal of zero-installation deployment. While JavaScript lacks the statistical ecosystem of R, the core methods implemented here (DL, REML, SJ estimators with PM for dose-response aggregation; HKSJ adjustment; multiple bias methods) have been validated against R reference implementations. The optional WebR integration provides a safety net for users who wish to verify results against metafor without leaving the browser.
 
 ### Limitations
 
@@ -140,10 +140,11 @@ Several design decisions merit discussion. The choice of JavaScript over R or Py
 4. Individual participant data (IPD) NMA is not supported. The tool operates on aggregate study-level data only.
 5. Bayesian model averaging across dose-response models uses a BIC-based approximation to marginal likelihoods rather than full posterior computation via MCMC or numerical integration.
 6. Bootstrap procedures use 1,000 replicates by default and are not parallelized via Web Workers, which may result in noticeable computation times for large datasets.
-7. The diagnostic test accuracy module implements the bivariate GLMM but does not support HSROC models with study-level covariates (meta-regression within the DTA framework).
+7. The diagnostic test accuracy module uses bivariate logit-transform pooling (unweighted means of logit-transformed sensitivity and specificity), which provides point estimates but does not implement the full random-effects likelihood of the Reitsma bivariate GLMM. HSROC curve generation is planned for a future release. Users should cross-validate DTA results against established R packages (e.g., mada, reitsma) for high-stakes analyses.
 8. WebR validation requires an initial internet connection to download the R WebAssembly runtime (approximately 20 MB). Subsequent use is cached by the browser.
 9. No formal usability evaluation has been conducted with a diverse sample of end users representing different statistical backgrounds and clinical specialties.
 10. The combined codebase (approximately 31,700 lines) may cause slow initial parsing on very low-end mobile devices or tablets with limited processing power.
+11. The Bayesian NMA module uses a simplified MCMC sampler that may not converge to correct posterior distributions for complex networks. Users should cross-validate Bayesian results against established tools (e.g., GeMTC, multinma) for high-stakes analyses.
 
 ## Software availability
 
