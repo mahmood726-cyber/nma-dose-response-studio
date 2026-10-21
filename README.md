@@ -23,7 +23,7 @@ No installation required.
 79/79 tests PASS against R metafor, netmeta, and dosresmeta.
 
 ## Citation
-> Ahmad M, et al. NMA Dose-Response Studio v2.0.1. *F1000Research*. 2026. [DOI pending]
+> Ahmad M, et al. NMA Dose-Response Studio v2.0.1. 2026.
 
 ## License
 MIT
